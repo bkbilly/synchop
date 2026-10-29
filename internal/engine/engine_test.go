@@ -339,3 +339,42 @@ func TestEngineLocalSourceNoCopyIntegration(t *testing.T) {
 
 	t.Log("Verified: local directories are accessed directly via zero-copy symlinks without copying to temporary staging!")
 }
+
+func TestScanLocalDirectoryProgressive(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a nested directory tree with known files
+	sub1 := filepath.Join(tmpDir, "sub1")
+	sub2 := filepath.Join(tmpDir, "sub2")
+	sub3 := filepath.Join(sub1, "nested")
+	_ = os.MkdirAll(sub1, 0755)
+	_ = os.MkdirAll(sub2, 0755)
+	_ = os.MkdirAll(sub3, 0755)
+
+	_ = os.WriteFile(filepath.Join(sub1, "a.txt"), []byte("12345"), 0644)
+	_ = os.WriteFile(filepath.Join(sub2, "b.txt"), []byte("1234567890"), 0644)
+	_ = os.WriteFile(filepath.Join(sub3, "c.txt"), []byte("123456789012345"), 0644)
+
+	eng := &Engine{}
+	var callbackCalls int
+	var lastPercent int
+	var lastEta string
+
+	totalBytes, fileCount, err := eng.scanLocalDirectoryProgressive(context.Background(), tmpDir, func(files int, bytes int64, pct int, speed, eta string) {
+		callbackCalls++
+		lastPercent = pct
+		lastEta = eta
+	})
+
+	if err != nil {
+		t.Fatalf("scanLocalDirectoryProgressive failed: %v", err)
+	}
+	if fileCount != 3 {
+		t.Errorf("expected 3 files, got %d", fileCount)
+	}
+	if totalBytes != 30 {
+		t.Errorf("expected 30 bytes, got %d", totalBytes)
+	}
+	t.Logf("Scan completed: files=%d, bytes=%d, callbackCalls=%d, lastPercent=%d, lastEta=%s", fileCount, totalBytes, callbackCalls, lastPercent, lastEta)
+}
+

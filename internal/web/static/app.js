@@ -186,7 +186,19 @@ function updateDashboardUI(state) {
 
   // Progress Bar & Stats
   const pct = state.overall_percent || 0;
-  document.getElementById("stat-percent").textContent = pct + "%";
+  let activeEta = "";
+  if (state.tasks) {
+    for (const k of Object.keys(state.tasks)) {
+      const t = state.tasks[k];
+      if (t.status === "running" && t.eta && t.eta !== "-" && t.eta !== "0s") {
+        activeEta = t.eta;
+        break;
+      }
+    }
+  }
+
+  const isRunning = state.status === "gathering" || state.status === "sending";
+  document.getElementById("stat-percent").textContent = pct + "%" + (isRunning && activeEta ? ` • ETA ${activeEta}` : "");
   document.getElementById("progress-bar-fill").style.width = pct + "%";
 
   document.getElementById("stat-speed").textContent = state.current_speed || "0 B/s";
@@ -229,9 +241,11 @@ function renderActiveTasks(tasks) {
     const div = document.createElement("div");
     div.style.cssText = "background: var(--bg-card-sub); padding: 0.85rem 1rem; border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid var(--border-color);";
 
-    let statusPill = `<span style="color:#60a5fa; font-weight:600; font-size:0.8rem;">Transferring</span>`;
+    let statusPill = `<span style="color:#60a5fa; font-weight:600; font-size:0.8rem;">Syncing</span>`;
     if (t.status === "completed") statusPill = `<span style="color:#34d399; font-weight:600; font-size:0.8rem;">✓ Complete</span>`;
     if (t.status === "failed") statusPill = `<span style="color:#f87171; font-weight:600; font-size:0.8rem;">✗ Failed</span>`;
+
+    const etaText = (t.eta && t.eta !== "-" && t.eta !== "0s") ? `(ETA: ${t.eta})` : "";
 
     div.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.35rem;">
@@ -243,7 +257,7 @@ function renderActiveTasks(tasks) {
       </div>
       <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-muted); margin-bottom:0.25rem;">
         <span>Speed: ${t.speed || "-"}</span>
-        <span>${t.percent}% ${t.eta ? "(ETA: " + t.eta + ")" : ""}</span>
+        <span>${t.percent}% ${etaText}</span>
       </div>
       <div class="progress-track" style="height:6px;">
         <div class="progress-fill" style="width: ${t.percent}%;"></div>

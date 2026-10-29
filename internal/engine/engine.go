@@ -337,6 +337,36 @@ func (e *Engine) runSyncPipeline(ctx context.Context, cfg config.SyncConfig, tri
 	})
 }
 
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func formatDuration(sec int) string {
+	if sec <= 0 {
+		return "0s"
+	}
+	if sec < 60 {
+		return fmt.Sprintf("%ds", sec)
+	}
+	m := sec / 60
+	s := sec % 60
+	if m < 60 {
+		return fmt.Sprintf("%dm %02ds", m, s)
+	}
+	h := m / 60
+	m = m % 60
+	return fmt.Sprintf("%dh %02dm %02ds", h, m, s)
+}
+
 func calcDirStats(dir string) (int64, int) {
 	var totalSize int64
 	var fileCount int
@@ -348,6 +378,186 @@ func calcDirStats(dir string) (int64, int) {
 		return nil
 	})
 	return totalSize, fileCount
+}
+
+// scanLocalDirectoryProgressive walks localPath while streaming live progress, speed, ETA, and percent
+func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath string, onProgress func(scannedFiles int, scannedBytes int64, percent int, speed, eta string)) (int64, int, error) {
+	fi, err := os.Stat(localPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !fi.IsDir() {
+		if onProgress != nil {
+			onProgress(1, fi.Size(), 100, "Local Direct", "0s")
+		}
+		return fi.Size(), 1, nil
+	}
+
+	topEntries, err := os.ReadDir(localPath)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(topEntries) == 0 {
+		if onProgress != nil {
+			onProgress(0, 0, 100, "Local Direct", "0s")
+		}
+		return 0, 0, nil
+	}
+
+	// If there is only one top-level directory, drill down to find representative branches
+	branches := topEntries
+	branchBase := localPath
+	for len(branches) == 1 {
+		bFi, bErr := branches[0].Info()
+		if bErr == nil && bFi.IsDir() {
+			nextDir := filepath.Join(branchBase, branches[0].Name())
+			sub, err := os.ReadDir(nextDir)
+			if err == nil && len(sub) > 0 {
+				branches = sub
+				branchBase = nextDir
+				continue
+			}
+		}
+		break
+	}
+
+	var totalFiles int
+	var totalBytes int64
+	startTime := time.Now()
+	lastUpdate := time.Now()
+	var currentPercent int
+
+	numBranches := len(branches)
+	branchWeight := 100.0 / float64(numBranches)
+
+	notify := func(pct int, force bool) {
+		now := time.Now()
+		if !force && now.Sub(lastUpdate) < 100*time.Millisecond {
+			return
+		}
+		elapsed := now.Sub(startTime).Seconds()
+		if elapsed > 0 {
+			speedBytes := float64(totalBytes) / elapsed
+			speedFiles := float64(totalFiles) / elapsed
+			speedStr := fmt.Sprintf("%s (%d files/s)", formatBytes(int64(speedBytes))+"/s", int(speedFiles))
+
+			etaStr := "-"
+			if pct > 0 {
+				estimatedTotal := elapsed / (float64(pct) / 100.0)
+				remaining := estimatedTotal - elapsed
+				if remaining < 0 {
+					remaining = 0
+				}
+				etaStr = formatDuration(int(remaining))
+			}
+
+			if onProgress != nil {
+				onProgress(totalFiles, totalBytes, pct, speedStr, etaStr)
+			}
+		}
+		lastUpdate = now
+	}
+
+	var walkBranch func(dirPath string, depth int, minPct, maxPct float64) error
+	walkBranch = func(dirPath string, depth int, minPct, maxPct float64) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			return nil
+		}
+
+		numEnt := len(entries)
+		for idx, entry := range entries {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			entPath := filepath.Join(dirPath, entry.Name())
+			eInfo, eErr := entry.Info()
+			if eErr != nil {
+				continue
+			}
+
+			if eInfo.Mode()&os.ModeSymlink != 0 {
+				if realFi, err := os.Stat(entPath); err == nil {
+					eInfo = realFi
+				}
+			}
+
+			entMinPct := minPct
+			entMaxPct := maxPct
+			if numEnt > 0 && depth <= 3 {
+				slice := (maxPct - minPct) / float64(numEnt)
+				entMinPct = minPct + float64(idx)*slice
+				entMaxPct = entMinPct + slice
+			}
+
+			if eInfo.IsDir() {
+				if err := walkBranch(entPath, depth+1, entMinPct, entMaxPct); err != nil {
+					return err
+				}
+			} else {
+				if !strings.Contains(entPath, ".synchop-partial") {
+					totalFiles++
+					totalBytes += eInfo.Size()
+					currentPercent = int(entMaxPct)
+					if currentPercent > 99 {
+						currentPercent = 99
+					}
+					notify(currentPercent, false)
+				}
+			}
+		}
+		return nil
+	}
+
+	for i, b := range branches {
+		select {
+		case <-ctx.Done():
+			return 0, 0, ctx.Err()
+		default:
+		}
+
+		bPath := filepath.Join(branchBase, b.Name())
+		bInfo, bErr := b.Info()
+		if bErr != nil {
+			continue
+		}
+		if bInfo.Mode()&os.ModeSymlink != 0 {
+			if realFi, err := os.Stat(bPath); err == nil {
+				bInfo = realFi
+			}
+		}
+
+		minP := float64(i) * branchWeight
+		maxP := float64(i+1) * branchWeight
+
+		if bInfo.IsDir() {
+			if err := walkBranch(bPath, 1, minP, maxP); err != nil {
+				return 0, 0, err
+			}
+		} else {
+			if !strings.Contains(bPath, ".synchop-partial") {
+				totalFiles++
+				totalBytes += bInfo.Size()
+				currentPercent = int(maxP)
+				if currentPercent > 99 {
+					currentPercent = 99
+				}
+				notify(currentPercent, false)
+			}
+		}
+	}
+
+	notify(100, true)
+	return totalBytes, totalFiles, nil
 }
 
 func (e *Engine) recordFailedRun(runID string, startTime time.Time, trigger string, cfg config.SyncConfig, err error, gathers []history.TaskStats, send *history.TaskStats) {
@@ -678,7 +888,48 @@ func (e *Engine) executeSourcesGather(ctx context.Context, cfg config.SyncConfig
 					}
 				}
 
-				totalBytes, fileCount := calcDirStats(localPath)
+				onProgress := func(scannedFiles int, scannedBytes int64, percent int, speed, eta string) {
+					e.updateState(func(s *SyncState) {
+						task := s.Tasks[src.ID]
+						task.Percent = percent
+						task.Speed = speed
+						task.ETA = eta
+						task.BytesTransferred = scannedBytes
+						task.UpdatedAt = time.Now()
+						s.Tasks[src.ID] = task
+
+						s.CurrentSpeed = speed
+						s.TotalBytesTransferred = scannedBytes
+
+						// Calculate OverallPercent during Phase 1 (0% to 50%)
+						if len(s.Tasks) > 0 {
+							var sumPercent int
+							for _, t := range s.Tasks {
+								sumPercent += t.Percent
+							}
+							avg := float64(sumPercent) / float64(len(s.Tasks))
+							s.OverallPercent = int(avg * 0.5)
+						}
+					})
+				}
+
+				totalBytes, fileCount, scanErr := e.scanLocalDirectoryProgressive(ctx, localPath, onProgress)
+				if scanErr != nil && scanErr != context.Canceled {
+					tStat.Status = "failed"
+					tStat.ErrorMessage = scanErr.Error()
+					e.updateState(func(s *SyncState) {
+						task := s.Tasks[src.ID]
+						task.Status = "failed"
+						task.ErrorMessage = scanErr.Error()
+						s.Tasks[src.ID] = task
+					})
+					errCh <- fmt.Errorf("[%s] local scan error: %w", src.Name, scanErr)
+					statsMu.Lock()
+					allStats = append(allStats, tStat)
+					statsMu.Unlock()
+					return
+				}
+
 				tStat.FilesScanned = fileCount
 				tStat.TotalSize = totalBytes
 				tStat.BytesTransferred = 0
@@ -689,8 +940,19 @@ func (e *Engine) executeSourcesGather(ctx context.Context, cfg config.SyncConfig
 					task.Status = "completed"
 					task.Percent = 100
 					task.Speed = "Direct Local"
+					task.ETA = "0s"
 					task.BytesTransferred = 0
+					task.UpdatedAt = time.Now()
 					s.Tasks[src.ID] = task
+
+					if len(s.Tasks) > 0 {
+						var sumPercent int
+						for _, t := range s.Tasks {
+							sumPercent += t.Percent
+						}
+						avg := float64(sumPercent) / float64(len(s.Tasks))
+						s.OverallPercent = int(avg * 0.5)
+					}
 				})
 
 				statsMu.Lock()
@@ -739,6 +1001,15 @@ func (e *Engine) executeSourcesGather(ctx context.Context, cfg config.SyncConfig
 
 					s.CurrentSpeed = p.Speed
 					s.TotalBytesTransferred = p.BytesTransferred
+
+					if len(s.Tasks) > 0 {
+						var sumPercent int
+						for _, tk := range s.Tasks {
+							sumPercent += tk.Percent
+						}
+						avg := float64(sumPercent) / float64(len(s.Tasks))
+						s.OverallPercent = int(avg * 0.5)
+					}
 				})
 			}
 
@@ -997,6 +1268,7 @@ func (e *Engine) executeDestinationSend(ctx context.Context, cfg config.SyncConf
 
 			s.CurrentSpeed = p.Speed
 			s.TotalBytesTransferred = p.BytesTransferred
+			s.OverallPercent = 50 + int(float64(p.Percent)*0.5)
 		})
 	}
 
