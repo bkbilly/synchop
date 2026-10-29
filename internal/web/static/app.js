@@ -197,7 +197,6 @@ function updateDashboardUI(state) {
     }
   }
 
-  const isRunning = state.status === "gathering" || state.status === "sending";
   document.getElementById("stat-percent").textContent = pct + "%" + (isRunning && activeEta ? ` • ETA ${activeEta}` : "");
   document.getElementById("progress-bar-fill").style.width = pct + "%";
 
