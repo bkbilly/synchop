@@ -1,0 +1,10 @@
+.git
+.github
+synchop
+config.json
+history.json
+staging/
+data/
+*.log
+*.tmp
+.DS_Store

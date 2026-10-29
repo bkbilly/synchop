@@ -1,0 +1,20 @@
+services:
+  synchop:
+    image: ghcr.io/bkbilly/synchop:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: synchop
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DATA_DIR=/data
+      - TZ=UTC
+    volumes:
+      # Persistent configuration, history, and staging cache
+      - ./data:/data
+      # Optional: Mount host directories if syncing to/from local folders on the host machine
+      # - /path/on/host/source:/mnt/source:ro
+      # - /path/on/host/destination:/mnt/destination

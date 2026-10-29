@@ -1,0 +1,26 @@
+# Root Binary
+/synchop
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Runtime Data & Credentials
+config.json
+history.json
+staging/
+data/
+.synchop-partial/
+.synchop-backups/
+
+# Test Artifacts & Logs
+*.log
+*.tmp
+*.out
+
+# OS / Editor Files
+.DS_Store
+.idea/
+.vscode/
+*.swp
