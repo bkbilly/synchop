@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -135,4 +136,47 @@ func ToRsyncArgs(modeStr, patternsText string) []string {
 		args = append(args, "--delete-excluded")
 	}
 	return args
+}
+
+// WalkDirWithSymlinks recursively walks root, resolving top-level or directory symlinks
+func WalkDirWithSymlinks(root string, walkFn func(relPath string, info os.FileInfo, fullPath string) error) error {
+	var walkSub func(currentDir, currentRel string) error
+	walkSub = func(currentDir, currentRel string) error {
+		entries, err := os.ReadDir(currentDir)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			subPath := filepath.Join(currentDir, name)
+			subRel := filepath.Join(currentRel, name)
+
+			fi, err := entry.Info()
+			if err != nil {
+				continue
+			}
+
+			// If symlink, resolve target info
+			if fi.Mode()&os.ModeSymlink != 0 {
+				if realFi, err := os.Stat(subPath); err == nil {
+					fi = realFi
+				}
+			}
+
+			if err := walkFn(subRel, fi, subPath); err != nil {
+				if err == filepath.SkipDir {
+					continue
+				}
+				return err
+			}
+
+			if fi.IsDir() {
+				if err := walkSub(subPath, subRel); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walkSub(root, "")
 }

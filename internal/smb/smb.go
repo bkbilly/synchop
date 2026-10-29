@@ -290,19 +290,11 @@ func SyncToSMB(ctx context.Context, localSrc string, spec config.EndpointSpec, o
 		ChangedFiles: make([]history.FileChange, 0),
 	}
 
-	err = filepath.Walk(localSrc, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+	err = filter.WalkDirWithSymlinks(localSrc, func(rel string, info os.FileInfo, fullPath string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-		}
-
-		rel, err := filepath.Rel(localSrc, path)
-		if err != nil || rel == "." {
-			return nil
 		}
 
 		if !f.ShouldKeep(rel, info.IsDir()) {
@@ -338,7 +330,7 @@ func SyncToSMB(ctx context.Context, localSrc string, spec config.EndpointSpec, o
 		}
 
 		// Upload file
-		localFile, err := os.Open(path)
+		localFile, err := os.Open(fullPath)
 		if err != nil {
 			return err
 		}

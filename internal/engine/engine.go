@@ -340,8 +340,8 @@ func (e *Engine) runSyncPipeline(ctx context.Context, cfg config.SyncConfig, tri
 func calcDirStats(dir string) (int64, int) {
 	var totalSize int64
 	var fileCount int
-	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && !strings.Contains(p, ".synchop-partial") {
+	_ = filter.WalkDirWithSymlinks(dir, func(rel string, info os.FileInfo, p string) error {
+		if !info.IsDir() && !strings.Contains(p, ".synchop-partial") {
 			totalSize += info.Size()
 			fileCount++
 		}
@@ -457,7 +457,7 @@ func (e *Engine) executeSourcesGather(ctx context.Context, cfg config.SyncConfig
 	}
 	if entries, err := os.ReadDir(stagingDir); err == nil {
 		for _, entry := range entries {
-			if entry.IsDir() && !activeFolders[entry.Name()] && !strings.HasPrefix(entry.Name(), ".") {
+			if !activeFolders[entry.Name()] && !strings.HasPrefix(entry.Name(), ".") {
 				_ = os.RemoveAll(filepath.Join(stagingDir, entry.Name()))
 			}
 		}
@@ -604,17 +604,107 @@ func (e *Engine) executeSourcesGather(ctx context.Context, cfg config.SyncConfig
 				return
 			}
 
-			// SSH or Local via rsync
-			srcEndpoint := src.RemotePath
-			if src.Type == config.TypeSSH {
-				userHost := src.Host
-				if src.User != "" {
-					userHost = src.User + "@" + src.Host
+			if src.Type == config.TypeLocal {
+				localPath := expandPath(src.RemotePath)
+				fi, statErr := os.Stat(localPath)
+				tStat := history.TaskStats{
+					ID:           src.ID,
+					Name:         src.Name,
+					Phase:        "gather",
+					EndpointType: string(src.Type),
 				}
-				srcEndpoint = fmt.Sprintf("%s:%s", userHost, src.RemotePath)
-			} else if src.Type == config.TypeLocal {
-				srcEndpoint = expandPath(src.RemotePath)
+
+				if statErr != nil {
+					tStat.Status = "failed"
+					tStat.ErrorMessage = statErr.Error()
+					e.updateState(func(s *SyncState) {
+						task := s.Tasks[src.ID]
+						task.Status = "failed"
+						task.ErrorMessage = statErr.Error()
+						s.Tasks[src.ID] = task
+					})
+					errCh <- fmt.Errorf("[%s] local path error: %w", src.Name, statErr)
+					statsMu.Lock()
+					allStats = append(allStats, tStat)
+					statsMu.Unlock()
+					return
+				}
+
+				if !fi.IsDir() {
+					errNotDir := fmt.Errorf("local source path '%s' is not a directory", localPath)
+					tStat.Status = "failed"
+					tStat.ErrorMessage = errNotDir.Error()
+					e.updateState(func(s *SyncState) {
+						task := s.Tasks[src.ID]
+						task.Status = "failed"
+						task.ErrorMessage = errNotDir.Error()
+						s.Tasks[src.ID] = task
+					})
+					errCh <- fmt.Errorf("[%s] %w", src.Name, errNotDir)
+					statsMu.Lock()
+					allStats = append(allStats, tStat)
+					statsMu.Unlock()
+					return
+				}
+
+				// If destPath exists and is a real directory (e.g. from previous runs that copied), remove it
+				if lfi, lerr := os.Lstat(destPath); lerr == nil {
+					if lfi.Mode()&os.ModeSymlink == 0 {
+						_ = os.RemoveAll(destPath)
+					} else {
+						target, _ := os.Readlink(destPath)
+						if target != localPath {
+							_ = os.Remove(destPath)
+						}
+					}
+				}
+
+				// Create direct symlink so destination sync accesses local directory directly without copying
+				if _, lerr := os.Lstat(destPath); os.IsNotExist(lerr) {
+					if linkErr := os.Symlink(localPath, destPath); linkErr != nil {
+						tStat.Status = "failed"
+						tStat.ErrorMessage = linkErr.Error()
+						e.updateState(func(s *SyncState) {
+							task := s.Tasks[src.ID]
+							task.Status = "failed"
+							task.ErrorMessage = linkErr.Error()
+							s.Tasks[src.ID] = task
+						})
+						errCh <- fmt.Errorf("[%s] failed to link local directory: %w", src.Name, linkErr)
+						statsMu.Lock()
+						allStats = append(allStats, tStat)
+						statsMu.Unlock()
+						return
+					}
+				}
+
+				totalBytes, fileCount := calcDirStats(localPath)
+				tStat.FilesScanned = fileCount
+				tStat.TotalSize = totalBytes
+				tStat.BytesTransferred = 0
+				tStat.Status = "completed"
+
+				e.updateState(func(s *SyncState) {
+					task := s.Tasks[src.ID]
+					task.Status = "completed"
+					task.Percent = 100
+					task.Speed = "Direct Local"
+					task.BytesTransferred = 0
+					s.Tasks[src.ID] = task
+				})
+
+				statsMu.Lock()
+				allStats = append(allStats, tStat)
+				statsMu.Unlock()
+				return
 			}
+
+			// Remote SSH via rsync
+			userHost := src.Host
+			if src.User != "" {
+				userHost = src.User + "@" + src.Host
+			}
+			srcEndpoint := fmt.Sprintf("%s:%s", userHost, src.RemotePath)
 
 			if !strings.HasSuffix(srcEndpoint, "/") {
 				srcEndpoint += "/"

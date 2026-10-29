@@ -67,6 +67,7 @@ type SyncTask struct {
 func BuildRsyncArgs(task SyncTask) []string {
 	args := []string{
 		"-avz",
+		"-k",
 		"--delete",
 		"--partial-dir=.synchop-partial",
 		"--info=progress2",

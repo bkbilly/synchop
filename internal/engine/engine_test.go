@@ -250,3 +250,92 @@ func TestEngineBackupRetentionIntegration(t *testing.T) {
 
 	t.Logf("Backup retention verified! Current backup dirs: %s, %s", entries3[0].Name(), entries3[1].Name())
 }
+
+func TestEngineLocalSourceNoCopyIntegration(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	srcDir := filepath.Join(tmpDir, "local_photos")
+	destDir := filepath.Join(tmpDir, "dest_backup")
+	stagingDir := filepath.Join(tmpDir, "temp_staging")
+	cfgPath := filepath.Join(tmpDir, "config.json")
+	histPath := filepath.Join(tmpDir, "history.json")
+
+	_ = os.MkdirAll(srcDir, 0755)
+	_ = os.MkdirAll(destDir, 0755)
+	_ = os.MkdirAll(stagingDir, 0755)
+
+	// Create test files in local source
+	_ = os.WriteFile(filepath.Join(srcDir, "image1.jpg"), []byte("photo 1 binary data"), 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, "image2.jpg"), []byte("photo 2 binary data"), 0644)
+
+	store, err := config.LoadStore(cfgPath, tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	histStore, err := history.NewStore(histPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng := NewEngine(store, histStore, nil)
+	store.Config.Sync.LocalStagingDir = stagingDir
+	store.Config.Sync.Sources = []config.EndpointSpec{
+		{
+			ID:         "src-local",
+			Name:       "photos",
+			Type:       config.TypeLocal,
+			RemotePath: srcDir,
+		},
+	}
+	store.Config.Sync.Destination = config.EndpointSpec{
+		ID:         "dest-local",
+		Name:       "backup",
+		Type:       config.TypeLocal,
+		RemotePath: destDir,
+	}
+
+	ctx := context.Background()
+	if err := eng.RunSyncBlocking(ctx, "manual"); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// 1. Verify that stagingDir/photos is a symlink, NOT a copied directory
+	stagingEntry := filepath.Join(stagingDir, "photos")
+	lfi, err := os.Lstat(stagingEntry)
+	if err != nil {
+		t.Fatalf("staging entry not found: %v", err)
+	}
+	if lfi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected staging entry to be a symlink (direct reference), but it is a real directory (copied)!")
+	}
+	target, _ := os.Readlink(stagingEntry)
+	if target != srcDir {
+		t.Fatalf("expected symlink target %s, got %s", srcDir, target)
+	}
+
+	// 2. Verify destination has the actual files
+	destFile1 := filepath.Join(destDir, "photos", "image1.jpg")
+	data1, err := os.ReadFile(destFile1)
+	if err != nil || string(data1) != "photo 1 binary data" {
+		t.Fatalf("destination file1 missing or mismatch: %v", err)
+	}
+
+	destFile2 := filepath.Join(destDir, "photos", "image2.jpg")
+	data2, err := os.ReadFile(destFile2)
+	if err != nil || string(data2) != "photo 2 binary data" {
+		t.Fatalf("destination file2 missing or mismatch: %v", err)
+	}
+
+	// 3. Modify local file directly, sync again
+	_ = os.WriteFile(filepath.Join(srcDir, "image1.jpg"), []byte("photo 1 updated"), 0644)
+	if err := eng.RunSyncBlocking(ctx, "manual"); err != nil {
+		t.Fatalf("second sync failed: %v", err)
+	}
+
+	data1Updated, _ := os.ReadFile(destFile1)
+	if string(data1Updated) != "photo 1 updated" {
+		t.Fatalf("expected updated file on destination, got %s", string(data1Updated))
+	}
+
+	t.Log("Verified: local directories are accessed directly via zero-copy symlinks without copying to temporary staging!")
+}
