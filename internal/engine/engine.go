@@ -225,17 +225,19 @@ func (e *Engine) runSyncPipeline(ctx context.Context, cfg config.SyncConfig, tri
 	// --------------------------------------------------------------------
 	// PHASE 1: GATHER SOURCES TO LOCAL STAGING (Parallel)
 	// --------------------------------------------------------------------
-	ingestTimeout := time.Duration(cfg.IngestTimeoutSec) * time.Second
-	if ingestTimeout <= 0 {
-		ingestTimeout = 10 * time.Minute
+	var ingestCtx context.Context
+	var cancelIngest context.CancelFunc
+	if cfg.IngestTimeoutSec > 0 {
+		ingestCtx, cancelIngest = context.WithTimeout(ctx, time.Duration(cfg.IngestTimeoutSec)*time.Second)
+	} else {
+		ingestCtx, cancelIngest = context.WithCancel(ctx)
 	}
-	ingestCtx, cancelIngest := context.WithTimeout(ctx, ingestTimeout)
 	defer cancelIngest()
 
 	gatherStats, err := e.executeSourcesGather(ingestCtx, cfg, stagingDir)
 	if err != nil {
 		var finalErr error
-		if ingestCtx.Err() == context.DeadlineExceeded {
+		if cfg.IngestTimeoutSec > 0 && ingestCtx.Err() == context.DeadlineExceeded {
 			finalErr = fmt.Errorf("Step 1 (Gathering) timed out after %d seconds", cfg.IngestTimeoutSec)
 			e.recordFailedRun(runID, startTime, trigger, cfg, finalErr, gatherStats, nil)
 			e.failSync(finalErr)
@@ -259,17 +261,19 @@ func (e *Engine) runSyncPipeline(ctx context.Context, cfg config.SyncConfig, tri
 		s.OverallPercent = 50
 	})
 
-	egressTimeout := time.Duration(cfg.EgressTimeoutSec) * time.Second
-	if egressTimeout <= 0 {
-		egressTimeout = 10 * time.Minute
+	var egressCtx context.Context
+	var cancelEgress context.CancelFunc
+	if cfg.EgressTimeoutSec > 0 {
+		egressCtx, cancelEgress = context.WithTimeout(ctx, time.Duration(cfg.EgressTimeoutSec)*time.Second)
+	} else {
+		egressCtx, cancelEgress = context.WithCancel(ctx)
 	}
-	egressCtx, cancelEgress := context.WithTimeout(ctx, egressTimeout)
 	defer cancelEgress()
 
 	sendStat, destResult, err := e.executeDestinationSend(egressCtx, cfg, stagingDir)
 	if err != nil {
 		var finalErr error
-		if egressCtx.Err() == context.DeadlineExceeded {
+		if cfg.EgressTimeoutSec > 0 && egressCtx.Err() == context.DeadlineExceeded {
 			finalErr = fmt.Errorf("Step 2 (Sending) timed out after %d seconds", cfg.EgressTimeoutSec)
 			e.recordFailedRun(runID, startTime, trigger, cfg, finalErr, gatherStats, sendStat)
 			e.failSync(finalErr)

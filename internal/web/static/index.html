@@ -246,6 +246,16 @@
               <input type="number" id="cfg-net-timeout" class="form-control" min="5" value="15">
               <small style="color: var(--text-muted); font-size: 0.75rem;">Dead socket detection</small>
             </div>
+            <div class="form-group">
+              <label>Gathering Timeout (Sec)</label>
+              <input type="number" id="cfg-ingest-timeout" class="form-control" min="0" value="0">
+              <small style="color: var(--text-muted); font-size: 0.75rem;">0 = Unlimited (no timeout)</small>
+            </div>
+            <div class="form-group">
+              <label>Sending Timeout (Sec)</label>
+              <input type="number" id="cfg-egress-timeout" class="form-control" min="0" value="0">
+              <small style="color: var(--text-muted); font-size: 0.75rem;">0 = Unlimited (no timeout)</small>
+            </div>
           </div>
 
           <div class="form-group">

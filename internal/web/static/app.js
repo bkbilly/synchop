@@ -729,6 +729,8 @@ function renderSettingsPage() {
 
   document.getElementById("cfg-workers").value = syncConfig.parallel_workers || 4;
   document.getElementById("cfg-net-timeout").value = syncConfig.network_timeout_sec || 15;
+  document.getElementById("cfg-ingest-timeout").value = syncConfig.ingest_timeout_sec !== undefined ? syncConfig.ingest_timeout_sec : 0;
+  document.getElementById("cfg-egress-timeout").value = syncConfig.egress_timeout_sec !== undefined ? syncConfig.egress_timeout_sec : 0;
   document.getElementById("cfg-staging-dir").value = syncConfig.local_staging_dir || "";
 
   // Backup & Retention
@@ -759,6 +761,8 @@ function renderSettingsPage() {
   document.getElementById("btn-save-settings").onclick = () => {
     syncConfig.parallel_workers = parseInt(document.getElementById("cfg-workers").value, 10) || 4;
     syncConfig.network_timeout_sec = parseInt(document.getElementById("cfg-net-timeout").value, 10) || 15;
+    syncConfig.ingest_timeout_sec = Math.max(0, parseInt(document.getElementById("cfg-ingest-timeout").value, 10) || 0);
+    syncConfig.egress_timeout_sec = Math.max(0, parseInt(document.getElementById("cfg-egress-timeout").value, 10) || 0);
     syncConfig.local_staging_dir = document.getElementById("cfg-staging-dir").value;
     syncConfig.backup_enabled = !!(backupEnabledEl && backupEnabledEl.checked);
     syncConfig.backup_retention_count = parseInt(backupCountEl ? backupCountEl.value : 5, 10) || 5;

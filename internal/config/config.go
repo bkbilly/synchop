@@ -72,8 +72,8 @@ func DefaultConfig(baseDir string) AppConfig {
 			SchedulePreset:    "manual",
 			IntervalMinutes:   0,
 			ParallelWorkers:   4,
-			IngestTimeoutSec:  300,
-			EgressTimeoutSec:  300,
+			IngestTimeoutSec:  0, // 0 = unlimited / no timeout
+			EgressTimeoutSec:  0, // 0 = unlimited / no timeout
 			NetworkTimeoutSec: 15,
 			LocalStagingDir:      staging,
 			BackupEnabled:        false,
@@ -116,12 +116,6 @@ func LoadStore(filePath string, defaultBaseDir string) (*Store, error) {
 	}
 	if s.Config.Sync.ParallelWorkers == 0 {
 		s.Config.Sync.ParallelWorkers = 4
-	}
-	if s.Config.Sync.IngestTimeoutSec == 0 {
-		s.Config.Sync.IngestTimeoutSec = 300
-	}
-	if s.Config.Sync.EgressTimeoutSec == 0 {
-		s.Config.Sync.EgressTimeoutSec = 300
 	}
 	if s.Config.Sync.NetworkTimeoutSec == 0 {
 		s.Config.Sync.NetworkTimeoutSec = 15
