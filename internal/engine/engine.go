@@ -384,15 +384,15 @@ func calcDirStats(dir string) (int64, int) {
 	return totalSize, fileCount
 }
 
-// scanLocalDirectoryProgressive walks localPath while streaming live progress, speed, ETA, and percent
-func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath string, onProgress func(scannedFiles int, scannedBytes int64, percent int, speed, eta string)) (int64, int, error) {
+// scanLocalDirectoryProgressive walks localPath while applying filters and streaming live progress, speed, ETA, and percent
+func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath string, filt *filter.Filter, onProgress func(scannedFiles int, scannedBytes int64, percent int, speed, eta string)) (int64, int, error) {
 	fi, err := os.Stat(localPath)
 	if err != nil {
 		return 0, 0, err
 	}
 	if !fi.IsDir() {
 		if onProgress != nil {
-			onProgress(1, fi.Size(), 100, "Local Direct", "0s")
+			onProgress(1, fi.Size(), 100, "Direct Local", "0s")
 		}
 		return fi.Size(), 1, nil
 	}
@@ -403,21 +403,52 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 	}
 	if len(topEntries) == 0 {
 		if onProgress != nil {
-			onProgress(0, 0, 100, "Local Direct", "0s")
+			onProgress(0, 0, 100, "Direct Local", "0s")
+		}
+		return 0, 0, nil
+	}
+
+	// Filter top-level entries against filter
+	var validTop []os.DirEntry
+	for _, entry := range topEntries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".synchop-partial") || strings.HasPrefix(name, ".synchop-backups") {
+			continue
+		}
+		if filt != nil && !filt.ShouldKeep(name, entry.IsDir()) {
+			continue
+		}
+		validTop = append(validTop, entry)
+	}
+
+	if len(validTop) == 0 {
+		if onProgress != nil {
+			onProgress(0, 0, 100, "Direct Local", "0s")
 		}
 		return 0, 0, nil
 	}
 
 	// If there is only one top-level directory, drill down to find representative branches
-	branches := topEntries
+	branches := validTop
 	branchBase := localPath
-	for len(branches) == 1 {
-		bFi, bErr := branches[0].Info()
-		if bErr == nil && bFi.IsDir() {
-			nextDir := filepath.Join(branchBase, branches[0].Name())
-			sub, err := os.ReadDir(nextDir)
-			if err == nil && len(sub) > 0 {
-				branches = sub
+	for len(branches) == 1 && branches[0].IsDir() {
+		nextDir := filepath.Join(branchBase, branches[0].Name())
+		sub, err := os.ReadDir(nextDir)
+		if err == nil && len(sub) > 0 {
+			var validSub []os.DirEntry
+			for _, se := range sub {
+				name := se.Name()
+				if strings.HasPrefix(name, ".synchop-partial") || strings.HasPrefix(name, ".synchop-backups") {
+					continue
+				}
+				rel, _ := filepath.Rel(localPath, filepath.Join(nextDir, name))
+				if filt != nil && !filt.ShouldKeep(rel, se.IsDir()) {
+					continue
+				}
+				validSub = append(validSub, se)
+			}
+			if len(validSub) > 0 {
+				branches = validSub
 				branchBase = nextDir
 				continue
 			}
@@ -427,14 +458,14 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 
 	var totalFiles int
 	var totalBytes int64
+	var mu sync.Mutex
+
 	startTime := time.Now()
 	lastUpdate := time.Now()
-	var currentPercent int
-
-	numBranches := len(branches)
-	branchWeight := 100.0 / float64(numBranches)
 
 	notify := func(pct int, force bool) {
+		mu.Lock()
+		defer mu.Unlock()
 		now := time.Now()
 		if !force && now.Sub(lastUpdate) < 100*time.Millisecond {
 			return
@@ -462,8 +493,8 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 		lastUpdate = now
 	}
 
-	var walkBranch func(dirPath string, depth int, minPct, maxPct float64) error
-	walkBranch = func(dirPath string, depth int, minPct, maxPct float64) error {
+	var walkBranch func(dirPath string, currentRel string, depth int, minPct, maxPct float64) error
+	walkBranch = func(dirPath string, currentRel string, depth int, minPct, maxPct float64) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -483,15 +514,29 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 			default:
 			}
 
-			entPath := filepath.Join(dirPath, entry.Name())
-			eInfo, eErr := entry.Info()
-			if eErr != nil {
+			name := entry.Name()
+			if strings.HasPrefix(name, ".synchop-partial") || strings.HasPrefix(name, ".synchop-backups") {
 				continue
 			}
 
-			if eInfo.Mode()&os.ModeSymlink != 0 {
+			subRel := filepath.Join(currentRel, name)
+			isDir := entry.IsDir()
+
+			// Fast filter check BEFORE any stat syscalls!
+			if filt != nil && !filt.ShouldKeep(subRel, isDir) {
+				continue
+			}
+
+			entPath := filepath.Join(dirPath, name)
+
+			// Handle symlinks if entry itself is a symlink
+			isSymlink := entry.Type()&os.ModeSymlink != 0
+			if isSymlink {
 				if realFi, err := os.Stat(entPath); err == nil {
-					eInfo = realFi
+					isDir = realFi.IsDir()
+					if filt != nil && !filt.ShouldKeep(subRel, isDir) {
+						continue
+					}
 				}
 			}
 
@@ -503,24 +548,50 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 				entMaxPct = entMinPct + slice
 			}
 
-			if eInfo.IsDir() {
-				if err := walkBranch(entPath, depth+1, entMinPct, entMaxPct); err != nil {
+			if isDir {
+				if err := walkBranch(entPath, subRel, depth+1, entMinPct, entMaxPct); err != nil {
 					return err
 				}
 			} else {
-				if !strings.Contains(entPath, ".synchop-partial") {
-					totalFiles++
-					totalBytes += eInfo.Size()
-					currentPercent = int(entMaxPct)
-					if currentPercent > 99 {
-						currentPercent = 99
-					}
-					notify(currentPercent, false)
+				eInfo, eErr := entry.Info()
+				if eErr != nil {
+					continue
 				}
+				if isSymlink {
+					if realFi, err := os.Stat(entPath); err == nil {
+						eInfo = realFi
+					}
+				}
+
+				if filt != nil && filt.MaxFileSize > 0 && eInfo.Size() > filt.MaxFileSize {
+					continue
+				}
+
+				mu.Lock()
+				totalFiles++
+				totalBytes += eInfo.Size()
+				pct := int(entMaxPct)
+				if pct > 99 {
+					pct = 99
+				}
+				mu.Unlock()
+
+				notify(pct, false)
 			}
 		}
 		return nil
 	}
+
+	numBranches := len(branches)
+	branchWeight := 100.0 / float64(numBranches)
+
+	var wg sync.WaitGroup
+	concurrency := 4
+	if numBranches < concurrency {
+		concurrency = numBranches
+	}
+	sem := make(chan struct{}, concurrency)
+	errCh := make(chan error, numBranches)
 
 	for i, b := range branches {
 		select {
@@ -529,35 +600,53 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 		default:
 		}
 
+		bRel := b.Name()
+		bIsDir := b.IsDir()
 		bPath := filepath.Join(branchBase, b.Name())
-		bInfo, bErr := b.Info()
-		if bErr != nil {
-			continue
-		}
-		if bInfo.Mode()&os.ModeSymlink != 0 {
-			if realFi, err := os.Stat(bPath); err == nil {
-				bInfo = realFi
-			}
-		}
-
 		minP := float64(i) * branchWeight
 		maxP := float64(i+1) * branchWeight
 
-		if bInfo.IsDir() {
-			if err := walkBranch(bPath, 1, minP, maxP); err != nil {
-				return 0, 0, err
-			}
-		} else {
-			if !strings.Contains(bPath, ".synchop-partial") {
-				totalFiles++
-				totalBytes += bInfo.Size()
-				currentPercent = int(maxP)
-				if currentPercent > 99 {
-					currentPercent = 99
+		wg.Add(1)
+		go func(path string, rel string, isDirectory bool, minPct, maxPct float64) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if isDirectory {
+				if err := walkBranch(path, rel, 1, minPct, maxPct); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
 				}
-				notify(currentPercent, false)
+			} else {
+				fi, err := os.Stat(path)
+				if err == nil {
+					if filt != nil && filt.MaxFileSize > 0 && fi.Size() > filt.MaxFileSize {
+						return
+					}
+					mu.Lock()
+					totalFiles++
+					totalBytes += fi.Size()
+					pct := int(maxPct)
+					if pct > 99 {
+						pct = 99
+					}
+					mu.Unlock()
+					notify(pct, false)
+				}
 			}
+		}(bPath, bRel, bIsDir, minP, maxP)
+	}
+
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return 0, 0, err
 		}
+	default:
 	}
 
 	notify(100, true)
@@ -917,7 +1006,8 @@ func (e *Engine) executeSourcesGather(ctx context.Context, cfg config.SyncConfig
 					})
 				}
 
-				totalBytes, fileCount, scanErr := e.scanLocalDirectoryProgressive(ctx, localPath, onProgress)
+				filt := filter.NewFilter(src.FilterMode, src.FilterPatterns)
+				totalBytes, fileCount, scanErr := e.scanLocalDirectoryProgressive(ctx, localPath, filt, onProgress)
 				if scanErr != nil && scanErr != context.Canceled {
 					tStat.Status = "failed"
 					tStat.ErrorMessage = scanErr.Error()
@@ -1244,6 +1334,14 @@ func (e *Engine) executeDestinationSend(ctx context.Context, cfg config.SyncConf
 	var destExtraArgs []string
 	if rsyncFilters := filter.ToRsyncArgs(dest.FilterMode, dest.FilterPatterns); len(rsyncFilters) > 0 {
 		destExtraArgs = append(destExtraArgs, rsyncFilters...)
+	}
+
+	for _, src := range cfg.Sources {
+		if src.Type == config.TypeLocal && (src.FilterMode != string(filter.ModeAll) || src.FilterPatterns != "") {
+			if srcFilters := filter.ToRsyncArgsForSource(src.Name, src.FilterMode, src.FilterPatterns); len(srcFilters) > 0 {
+				destExtraArgs = append(destExtraArgs, srcFilters...)
+			}
+		}
 	}
 
 	task := rsync.SyncTask{

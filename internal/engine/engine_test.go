@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"synchop/internal/config"
+	"synchop/internal/filter"
 	"synchop/internal/history"
 )
 
@@ -360,7 +361,7 @@ func TestScanLocalDirectoryProgressive(t *testing.T) {
 	var lastPercent int
 	var lastEta string
 
-	totalBytes, fileCount, err := eng.scanLocalDirectoryProgressive(context.Background(), tmpDir, func(files int, bytes int64, pct int, speed, eta string) {
+	totalBytes, fileCount, err := eng.scanLocalDirectoryProgressive(context.Background(), tmpDir, nil, func(files int, bytes int64, pct int, speed, eta string) {
 		callbackCalls++
 		lastPercent = pct
 		lastEta = eta
@@ -376,5 +377,93 @@ func TestScanLocalDirectoryProgressive(t *testing.T) {
 		t.Errorf("expected 30 bytes, got %d", totalBytes)
 	}
 	t.Logf("Scan completed: files=%d, bytes=%d, callbackCalls=%d, lastPercent=%d, lastEta=%s", fileCount, totalBytes, callbackCalls, lastPercent, lastEta)
+}
+
+func TestScanLocalDirectoryProgressiveWithFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	sub := filepath.Join(tmpDir, "sub")
+	bigDir := filepath.Join(tmpDir, "big_folder")
+	_ = os.MkdirAll(sub, 0755)
+	_ = os.MkdirAll(bigDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(sub, "keep.txt"), []byte("keep me"), 0644)
+	_ = os.WriteFile(filepath.Join(sub, "large.iso"), []byte("large file content"), 0644)
+	_ = os.WriteFile(filepath.Join(bigDir, "inside_big.txt"), []byte("inside big"), 0644)
+
+	eng := &Engine{}
+	filt := filter.NewFilter("exclude", "*.iso, big_folder")
+
+	totalBytes, fileCount, err := eng.scanLocalDirectoryProgressive(context.Background(), tmpDir, filt, nil)
+	if err != nil {
+		t.Fatalf("scan with filter failed: %v", err)
+	}
+
+	if fileCount != 1 {
+		t.Errorf("expected only 1 file (keep.txt) to be scanned, got %d", fileCount)
+	}
+	if totalBytes != int64(len("keep me")) {
+		t.Errorf("expected %d bytes, got %d", len("keep me"), totalBytes)
+	}
+}
+
+func TestEngineLocalSourceFilterIntegration(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	srcDir := filepath.Join(tmpDir, "local_src")
+	destDir := filepath.Join(tmpDir, "dest")
+	stagingDir := filepath.Join(tmpDir, "staging")
+	cfgPath := filepath.Join(tmpDir, "config.json")
+	histPath := filepath.Join(tmpDir, "history.json")
+
+	_ = os.MkdirAll(srcDir, 0755)
+	_ = os.MkdirAll(destDir, 0755)
+	_ = os.MkdirAll(stagingDir, 0755)
+
+	_ = os.WriteFile(filepath.Join(srcDir, "doc.txt"), []byte("important document"), 0644)
+	_ = os.WriteFile(filepath.Join(srcDir, "large.iso"), []byte("gigantic iso file"), 0644)
+
+	store, err := config.LoadStore(cfgPath, tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	histStore, err := history.NewStore(histPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eng := NewEngine(store, histStore, nil)
+	store.Config.Sync.LocalStagingDir = stagingDir
+	store.Config.Sync.Sources = []config.EndpointSpec{
+		{
+			ID:             "src-local",
+			Name:           "my_local",
+			Type:           config.TypeLocal,
+			RemotePath:     srcDir,
+			FilterMode:     "exclude",
+			FilterPatterns: "*.iso",
+		},
+	}
+	store.Config.Sync.Destination = config.EndpointSpec{
+		ID:         "dest-local",
+		Name:       "backup_dest",
+		Type:       config.TypeLocal,
+		RemotePath: destDir,
+	}
+
+	ctx := context.Background()
+	if err := eng.RunSyncBlocking(ctx, "manual"); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// Verify doc.txt is synced
+	if _, err := os.Stat(filepath.Join(destDir, "my_local", "doc.txt")); err != nil {
+		t.Fatalf("expected doc.txt on destination, got err: %v", err)
+	}
+
+	// Verify large.iso is EXCLUDED from destination
+	if _, err := os.Stat(filepath.Join(destDir, "my_local", "large.iso")); !os.IsNotExist(err) {
+		t.Fatalf("expected large.iso to be excluded from destination, but it was copied!")
+	}
 }
 

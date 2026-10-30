@@ -49,3 +49,35 @@ func TestExclude(t *testing.T) {
 		t.Errorf("unexpected rsync exclude args: %v", rsyncArgs)
 	}
 }
+
+func TestFilterWithSize(t *testing.T) {
+	f := NewFilter("exclude", "*.tmp, >100MB")
+	if f.MaxFileSize != 100*1024*1024 {
+		t.Errorf("expected 104857600 bytes, got %d", f.MaxFileSize)
+	}
+	rsyncArgs := ToRsyncArgs("exclude", "*.tmp, >100MB")
+	hasMaxSize := false
+	for _, a := range rsyncArgs {
+		if a == "--max-size=100mb" {
+			hasMaxSize = true
+			break
+		}
+	}
+	if !hasMaxSize {
+		t.Errorf("expected --max-size=100mb in args: %v", rsyncArgs)
+	}
+}
+
+func TestToRsyncArgsForSource(t *testing.T) {
+	args := ToRsyncArgsForSource("my_photos", "exclude", "*.iso, cache/")
+	hasFilter := false
+	for _, a := range args {
+		if a == "--filter=- /my_photos/cache/" {
+			hasFilter = true
+			break
+		}
+	}
+	if !hasFilter {
+		t.Errorf("expected scoped filter for cache/ in args: %v", args)
+	}
+}
