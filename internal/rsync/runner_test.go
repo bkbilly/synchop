@@ -123,3 +123,27 @@ func TestBuildRsyncArgsWithBackup(t *testing.T) {
 		t.Errorf("expected --exclude in args: %s", argStr)
 	}
 }
+
+func TestBuildRsyncArgsCompression(t *testing.T) {
+	taskNoComp := SyncTask{
+		ID:          "dest-1",
+		Source:      "/src/",
+		Destination: "/dst/",
+		Compress:    false,
+	}
+	argsNoComp := BuildRsyncArgs(taskNoComp)
+	if argsNoComp[0] != "-av" {
+		t.Errorf("expected -av when Compress is false, got %s", argsNoComp[0])
+	}
+
+	taskComp := SyncTask{
+		ID:          "dest-2",
+		Source:      "/src/",
+		Destination: "/dst/",
+		Compress:    true,
+	}
+	argsComp := BuildRsyncArgs(taskComp)
+	if argsComp[0] != "-avz" {
+		t.Errorf("expected -avz when Compress is true, got %s", argsComp[0])
+	}
+}

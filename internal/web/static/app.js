@@ -200,6 +200,17 @@ function updateDashboardUI(state) {
   document.getElementById("stat-percent").textContent = pct + "%" + (isRunning && activeEta ? ` • ETA ${activeEta}` : "");
   document.getElementById("progress-bar-fill").style.width = pct + "%";
 
+  // Update browser tab title with backup progress
+  if (isRunning) {
+    document.title = `(${pct}%) SyncHop`;
+  } else if (state.status === "completed") {
+    document.title = "✓ SyncHop";
+  } else if (state.status === "failed") {
+    document.title = "✗ SyncHop";
+  } else {
+    document.title = "SyncHop";
+  }
+
   // Format Current Speed metric cleanly (stable 1-line value + optional rate subtext)
   const rawSpeed = (state.current_speed || "0 B/s").trim();
   const speedEl = document.getElementById("stat-speed");
@@ -249,6 +260,16 @@ function updateDashboardUI(state) {
     alertMsg.textContent = state.last_error;
   } else {
     alertBox.style.display = "none";
+  }
+
+  // Hide last run summary card while a backup sync is in progress
+  const lastRunCard = document.getElementById("dash-last-run-card");
+  if (lastRunCard) {
+    if (isRunning) {
+      lastRunCard.style.display = "none";
+    } else if (historyData && historyData.summary && historyData.summary.last_run) {
+      updateDashboardLastRun(historyData.summary.last_run);
+    }
   }
 
   // Render active tasks during transfer
@@ -315,6 +336,8 @@ function setupDashboardActions() {
     } else {
       // Start
       actionBtn.disabled = true;
+      const lastRunCard = document.getElementById("dash-last-run-card");
+      if (lastRunCard) lastRunCard.style.display = "none";
       try {
         const res = await fetch("/api/sync/start", { method: "POST" });
         if (!res.ok) {
@@ -765,6 +788,12 @@ function renderSettingsPage() {
   document.getElementById("cfg-egress-timeout").value = syncConfig.egress_timeout_sec !== undefined ? syncConfig.egress_timeout_sec : 0;
   document.getElementById("cfg-staging-dir").value = syncConfig.local_staging_dir || "";
 
+  // Rsync Compression
+  const compressEl = document.getElementById("cfg-rsync-compress");
+  if (compressEl) {
+    compressEl.checked = !!syncConfig.rsync_compress;
+  }
+
   // Backup & Retention
   const backupEnabledEl = document.getElementById("cfg-backup-enabled");
   const backupOptionsContainer = document.getElementById("backup-options-container");
@@ -796,6 +825,7 @@ function renderSettingsPage() {
     syncConfig.ingest_timeout_sec = Math.max(0, parseInt(document.getElementById("cfg-ingest-timeout").value, 10) || 0);
     syncConfig.egress_timeout_sec = Math.max(0, parseInt(document.getElementById("cfg-egress-timeout").value, 10) || 0);
     syncConfig.local_staging_dir = document.getElementById("cfg-staging-dir").value;
+    syncConfig.rsync_compress = !!(compressEl && compressEl.checked);
     syncConfig.backup_enabled = !!(backupEnabledEl && backupEnabledEl.checked);
     syncConfig.backup_retention_count = parseInt(backupCountEl ? backupCountEl.value : 5, 10) || 5;
     syncConfig.backup_dir_name = (backupDirNameEl ? backupDirNameEl.value.trim() : "") || ".synchop-backups";
@@ -977,7 +1007,8 @@ function updateDashboardLastRun(lastRun) {
   const card = document.getElementById("dash-last-run-card");
   if (!card) return;
 
-  if (!lastRun) {
+  const isRunning = currentSyncState && (currentSyncState.status === "gathering" || currentSyncState.status === "sending");
+  if (!lastRun || isRunning) {
     card.style.display = "none";
     return;
   }

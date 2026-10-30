@@ -58,6 +58,7 @@ type SyncTask struct {
 	SSHUser        string
 	SSHPassword    string
 	ExtraArgs      []string
+	Compress       bool
 	BackupEnabled  bool
 	BackupDir      string
 	BackupBaseDir  string
@@ -65,8 +66,12 @@ type SyncTask struct {
 
 // BuildRsyncArgs constructs optimal rsync arguments for delta sync, stateful resumption, and strict timeouts
 func BuildRsyncArgs(task SyncTask) []string {
+	flags := "-av"
+	if task.Compress {
+		flags = "-avz"
+	}
 	args := []string{
-		"-avz",
+		flags,
 		"-k",
 		"--delete",
 		"--partial-dir=.synchop-partial",

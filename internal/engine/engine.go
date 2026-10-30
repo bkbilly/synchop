@@ -991,6 +991,7 @@ func (e *Engine) executeSourcesGather(ctx context.Context, cfg config.SyncConfig
 				SSHUser:        src.User,
 				SSHPassword:    src.Password,
 				ExtraArgs:      extraArgs,
+				Compress:       cfg.RsyncCompress,
 			}
 
 			onProgress := func(p rsync.ProgressUpdate) {
@@ -1255,6 +1256,7 @@ func (e *Engine) executeDestinationSend(ctx context.Context, cfg config.SyncConf
 		SSHUser:        dest.User,
 		SSHPassword:    dest.Password,
 		ExtraArgs:      destExtraArgs,
+		Compress:       cfg.RsyncCompress,
 		BackupEnabled:  cfg.BackupEnabled,
 		BackupDir:      backupSubDir,
 		BackupBaseDir:  cfg.BackupDirName,

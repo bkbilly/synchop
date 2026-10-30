@@ -271,6 +271,16 @@
             </div>
             <small style="color: var(--text-muted); font-size: 0.75rem;">Temporary consolidation folder on this machine.</small>
           </div>
+
+          <div class="form-group" style="margin-top: 1.25rem;">
+            <label style="display: flex; align-items: center; gap: 0.65rem; cursor: pointer; user-select: none;">
+              <input type="checkbox" id="cfg-rsync-compress" style="width: 1.15rem; height: 1.15rem; cursor: pointer; accent-color: var(--accent-blue);">
+              <span style="font-weight: 600;">Enable Rsync Compression (-z)</span>
+            </label>
+            <small style="color: var(--text-muted); font-size: 0.75rem; display: block; margin-top: 0.25rem;">
+              Disabled by default. Recommended <strong>OFF</strong> for LAN / Gigabit networks to avoid CPU bottlenecking and unlock full 100+ MB/s speeds. Enable only for slow internet or WAN connections.
+            </small>
+          </div>
         </div>
 
         <!-- Destination Backups & Retention -->

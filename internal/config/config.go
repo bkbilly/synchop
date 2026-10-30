@@ -43,6 +43,7 @@ type SyncConfig struct {
 	IngestTimeoutSec  int            `json:"ingest_timeout_sec"`
 	EgressTimeoutSec  int            `json:"egress_timeout_sec"`
 	NetworkTimeoutSec int            `json:"network_timeout_sec"`
+	RsyncCompress     bool           `json:"rsync_compress"`
 	LocalStagingDir      string         `json:"local_staging_dir"`
 	BackupEnabled        bool           `json:"backup_enabled"`
 	BackupRetentionCount int            `json:"backup_retention_count"`
@@ -75,6 +76,7 @@ func DefaultConfig(baseDir string) AppConfig {
 			IngestTimeoutSec:  0, // 0 = unlimited / no timeout
 			EgressTimeoutSec:  0, // 0 = unlimited / no timeout
 			NetworkTimeoutSec: 15,
+			RsyncCompress:     false,
 			LocalStagingDir:      staging,
 			BackupEnabled:        false,
 			BackupRetentionCount: 5,
