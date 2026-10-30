@@ -458,6 +458,7 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 
 	var totalFiles int
 	var totalBytes int64
+	var lastPct int
 	var mu sync.Mutex
 
 	startTime := time.Now()
@@ -466,6 +467,11 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 	notify := func(pct int, force bool) {
 		mu.Lock()
 		defer mu.Unlock()
+		if pct < lastPct {
+			pct = lastPct
+		} else {
+			lastPct = pct
+		}
 		now := time.Now()
 		if !force && now.Sub(lastUpdate) < 100*time.Millisecond {
 			return
@@ -493,8 +499,11 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 		lastUpdate = now
 	}
 
-	var walkBranch func(dirPath string, currentRel string, depth int, minPct, maxPct float64) error
-	walkBranch = func(dirPath string, currentRel string, depth int, minPct, maxPct float64) error {
+	numBranches := len(branches)
+	branchProgress := make([]float64, numBranches)
+
+	var walkBranch func(dirPath string, currentRel string, depth int, bIdx int, minFrac, maxFrac float64) error
+	walkBranch = func(dirPath string, currentRel string, depth int, bIdx int, minFrac, maxFrac float64) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -540,16 +549,16 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 				}
 			}
 
-			entMinPct := minPct
-			entMaxPct := maxPct
+			entMinFrac := minFrac
+			entMaxFrac := maxFrac
 			if numEnt > 0 && depth <= 3 {
-				slice := (maxPct - minPct) / float64(numEnt)
-				entMinPct = minPct + float64(idx)*slice
-				entMaxPct = entMinPct + slice
+				slice := (maxFrac - minFrac) / float64(numEnt)
+				entMinFrac = minFrac + float64(idx)*slice
+				entMaxFrac = entMinFrac + slice
 			}
 
 			if isDir {
-				if err := walkBranch(entPath, subRel, depth+1, entMinPct, entMaxPct); err != nil {
+				if err := walkBranch(entPath, subRel, depth+1, bIdx, entMinFrac, entMaxFrac); err != nil {
 					return err
 				}
 			} else {
@@ -570,7 +579,12 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 				mu.Lock()
 				totalFiles++
 				totalBytes += eInfo.Size()
-				pct := int(entMaxPct)
+				branchProgress[bIdx] = entMaxFrac
+				var sumFrac float64
+				for _, fr := range branchProgress {
+					sumFrac += fr
+				}
+				pct := int((sumFrac / float64(numBranches)) * 100.0)
 				if pct > 99 {
 					pct = 99
 				}
@@ -581,9 +595,6 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 		}
 		return nil
 	}
-
-	numBranches := len(branches)
-	branchWeight := 100.0 / float64(numBranches)
 
 	var wg sync.WaitGroup
 	concurrency := 4
@@ -603,22 +614,24 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 		bRel := b.Name()
 		bIsDir := b.IsDir()
 		bPath := filepath.Join(branchBase, b.Name())
-		minP := float64(i) * branchWeight
-		maxP := float64(i+1) * branchWeight
+		bIndex := i
 
 		wg.Add(1)
-		go func(path string, rel string, isDirectory bool, minPct, maxPct float64) {
+		go func(path string, rel string, isDirectory bool, idx int) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			if isDirectory {
-				if err := walkBranch(path, rel, 1, minPct, maxPct); err != nil {
+				if err := walkBranch(path, rel, 1, idx, 0.0, 1.0); err != nil {
 					select {
 					case errCh <- err:
 					default:
 					}
 				}
+				mu.Lock()
+				branchProgress[idx] = 1.0
+				mu.Unlock()
 			} else {
 				fi, err := os.Stat(path)
 				if err == nil {
@@ -628,7 +641,12 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 					mu.Lock()
 					totalFiles++
 					totalBytes += fi.Size()
-					pct := int(maxPct)
+					branchProgress[idx] = 1.0
+					var sumFrac float64
+					for _, fr := range branchProgress {
+						sumFrac += fr
+					}
+					pct := int((sumFrac / float64(numBranches)) * 100.0)
 					if pct > 99 {
 						pct = 99
 					}
@@ -636,7 +654,7 @@ func (e *Engine) scanLocalDirectoryProgressive(ctx context.Context, localPath st
 					notify(pct, false)
 				}
 			}
-		}(bPath, bRel, bIsDir, minP, maxP)
+		}(bPath, bRel, bIsDir, bIndex)
 	}
 
 	wg.Wait()
@@ -981,51 +999,9 @@ func (e *Engine) executeSourcesGather(ctx context.Context, cfg config.SyncConfig
 					}
 				}
 
-				onProgress := func(scannedFiles int, scannedBytes int64, percent int, speed, eta string) {
-					e.updateState(func(s *SyncState) {
-						task := s.Tasks[src.ID]
-						task.Percent = percent
-						task.Speed = speed
-						task.ETA = eta
-						task.BytesTransferred = scannedBytes
-						task.UpdatedAt = time.Now()
-						s.Tasks[src.ID] = task
-
-						s.CurrentSpeed = speed
-						s.TotalBytesTransferred = scannedBytes
-
-						// Calculate OverallPercent during Phase 1 (0% to 50%)
-						if len(s.Tasks) > 0 {
-							var sumPercent int
-							for _, t := range s.Tasks {
-								sumPercent += t.Percent
-							}
-							avg := float64(sumPercent) / float64(len(s.Tasks))
-							s.OverallPercent = int(avg * 0.5)
-						}
-					})
-				}
-
-				filt := filter.NewFilter(src.FilterMode, src.FilterPatterns)
-				totalBytes, fileCount, scanErr := e.scanLocalDirectoryProgressive(ctx, localPath, filt, onProgress)
-				if scanErr != nil && scanErr != context.Canceled {
-					tStat.Status = "failed"
-					tStat.ErrorMessage = scanErr.Error()
-					e.updateState(func(s *SyncState) {
-						task := s.Tasks[src.ID]
-						task.Status = "failed"
-						task.ErrorMessage = scanErr.Error()
-						s.Tasks[src.ID] = task
-					})
-					errCh <- fmt.Errorf("[%s] local scan error: %w", src.Name, scanErr)
-					statsMu.Lock()
-					allStats = append(allStats, tStat)
-					statsMu.Unlock()
-					return
-				}
-
-				tStat.FilesScanned = fileCount
-				tStat.TotalSize = totalBytes
+				// Direct symlink established; gathering is instantaneous zero-copy
+				tStat.FilesScanned = 1
+				tStat.TotalSize = 0
 				tStat.BytesTransferred = 0
 				tStat.Status = "completed"
 

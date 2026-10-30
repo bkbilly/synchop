@@ -147,3 +147,16 @@ func TestBuildRsyncArgsCompression(t *testing.T) {
 		t.Errorf("expected -avz when Compress is true, got %s", argsComp[0])
 	}
 }
+
+func TestBuildRsyncArgsNoIncRecursive(t *testing.T) {
+	task := SyncTask{
+		ID:          "dest-1",
+		Source:      "/src/",
+		Destination: "/dst/",
+	}
+	args := BuildRsyncArgs(task)
+	argStr := strings.Join(args, " ")
+	if !strings.Contains(argStr, "--no-inc-recursive") {
+		t.Errorf("expected --no-inc-recursive in args: %s", argStr)
+	}
+}

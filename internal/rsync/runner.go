@@ -73,6 +73,7 @@ func BuildRsyncArgs(task SyncTask) []string {
 	args := []string{
 		flags,
 		"-k",
+		"--no-inc-recursive",
 		"--delete",
 		"--partial-dir=.synchop-partial",
 		"--info=progress2",

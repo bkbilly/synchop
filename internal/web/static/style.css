@@ -639,6 +639,11 @@ header {
   transition: border-color 0.2s ease;
 }
 
+textarea.form-control {
+  line-height: 1.45;
+  resize: vertical;
+}
+
 .form-control:focus {
   outline: none;
   border-color: var(--border-focus);

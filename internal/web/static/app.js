@@ -200,9 +200,10 @@ function updateDashboardUI(state) {
   document.getElementById("stat-percent").textContent = pct + "%" + (isRunning && activeEta ? ` • ETA ${activeEta}` : "");
   document.getElementById("progress-bar-fill").style.width = pct + "%";
 
-  // Update browser tab title with backup progress
+  // Update browser tab title with backup progress and current step
   if (isRunning) {
-    document.title = `(${pct}%) SyncHop`;
+    const stepLabel = state.status === "gathering" ? "Step 1" : "Step 2";
+    document.title = `(${pct}% • ${stepLabel}) SyncHop`;
   } else if (state.status === "completed") {
     document.title = "✓ SyncHop";
   } else if (state.status === "failed") {
@@ -486,12 +487,16 @@ function renderSourcesPage() {
             </div>
             <div id="filter-box-${idx}" style="${(src.filter_mode || "all") === "all" ? "display:none;" : ""}">
               <label id="filter-label-${idx}">
-                ${src.filter_mode === "include_only" ? "Files to Include (e.g. *.txt, *.pdf)" : "Files to Exclude (e.g. *.tmp, cache/)"}
+                ${src.filter_mode === "include_only" ? "Files to Include (e.g. *.txt, *.pdf)" : "Files to Exclude (e.g. *.tmp, cache/, >100M)"}
               </label>
-              <input type="text" class="form-control" id="filter-input-${idx}"
-                placeholder="${src.filter_mode === "include_only" ? "e.g. *.txt, *.pdf" : "e.g. *.tmp, cache/, .git/"}" 
-                value="${escapeHtml(src.filter_patterns || "")}" 
-                oninput="syncConfig.sources[${idx}].filter_patterns = this.value">
+              <textarea class="form-control" id="filter-input-${idx}"
+                rows="3"
+                style="resize: vertical; font-family: monospace; font-size: 0.85rem; min-height: 68px;"
+                placeholder="${src.filter_mode === "include_only" ? "e.g. *.txt, *.pdf\nOne pattern per line or comma-separated" : "e.g. *.tmp, cache/, >100M\nOne pattern per line or comma-separated"}"
+                oninput="syncConfig.sources[${idx}].filter_patterns = this.value">${escapeHtml(src.filter_patterns || "")}</textarea>
+              <small style="color:var(--text-muted); font-size:0.75rem; display:block; margin-top:0.25rem;">
+                One pattern or size limit (e.g. <code>*.iso</code>, <code>cache/</code>, <code>&gt;100M</code>) per line or separated by commas.
+              </small>
             </div>
           </div>
         </div>
@@ -532,10 +537,10 @@ window.updateFilterMode = function(idx, mode) {
       box.style.display = "block";
       if (mode === "include_only") {
         label.textContent = "Files to Include (e.g. *.txt, *.pdf)";
-        input.placeholder = "e.g. *.txt, *.pdf";
+        input.placeholder = "e.g. *.txt, *.pdf\nOne pattern per line or comma-separated";
       } else {
-        label.textContent = "Files to Exclude (e.g. *.tmp, cache/)";
-        input.placeholder = "e.g. *.tmp, cache/, .git/";
+        label.textContent = "Files to Exclude (e.g. *.tmp, cache/, >100M)";
+        input.placeholder = "e.g. *.tmp, cache/, >100M\nOne pattern per line or comma-separated";
       }
     }
   }
