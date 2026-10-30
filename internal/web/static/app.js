@@ -200,12 +200,45 @@ function updateDashboardUI(state) {
   document.getElementById("stat-percent").textContent = pct + "%" + (isRunning && activeEta ? ` • ETA ${activeEta}` : "");
   document.getElementById("progress-bar-fill").style.width = pct + "%";
 
-  document.getElementById("stat-speed").textContent = state.current_speed || "0 B/s";
-  document.getElementById("stat-elapsed").textContent = (state.elapsed_sec || 0) + "s";
+  // Format Current Speed metric cleanly (stable 1-line value + optional rate subtext)
+  const rawSpeed = (state.current_speed || "0 B/s").trim();
+  const speedEl = document.getElementById("stat-speed");
+  const speedSubEl = document.getElementById("stat-speed-sub");
+  if (speedEl) {
+    speedEl.title = rawSpeed;
+    const parenIdx = rawSpeed.indexOf("(");
+    if (parenIdx !== -1) {
+      const mainSpeed = rawSpeed.substring(0, parenIdx).trim();
+      const subInfo = rawSpeed.substring(parenIdx).replace(/[()]/g, "").trim();
+      speedEl.textContent = mainSpeed || "0 B/s";
+      if (speedSubEl) speedSubEl.textContent = subInfo;
+    } else {
+      speedEl.textContent = rawSpeed;
+      if (speedSubEl) speedSubEl.textContent = "";
+    }
+  }
 
+  // Format Elapsed Time
+  const elapsedSec = state.elapsed_sec || 0;
+  const elapsedEl = document.getElementById("stat-elapsed");
+  const elapsedSubEl = document.getElementById("stat-elapsed-sub");
+  if (elapsedEl) {
+    elapsedEl.textContent = formatDuration(elapsedSec);
+  }
+  if (elapsedSubEl) {
+    elapsedSubEl.textContent = isRunning ? "In progress" : (elapsedSec > 0 ? "Last run duration" : "");
+  }
+
+  // Format Last Successful Sync
+  const lastSyncEl = document.getElementById("stat-last-sync");
+  const lastSyncSubEl = document.getElementById("stat-last-sync-sub");
   if (state.last_success_time) {
     const d = new Date(state.last_success_time);
-    document.getElementById("stat-last-sync").textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (lastSyncEl) lastSyncEl.textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (lastSyncSubEl) lastSyncSubEl.textContent = formatRelativeTime(state.last_success_time);
+  } else {
+    if (lastSyncEl) lastSyncEl.textContent = "Never";
+    if (lastSyncSubEl) lastSyncSubEl.textContent = "";
   }
 
   // Error alert
@@ -254,9 +287,9 @@ function renderActiveTasks(tasks) {
         </div>
         <div>${statusPill}</div>
       </div>
-      <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-muted); margin-bottom:0.25rem;">
-        <span>Speed: ${t.speed || "-"}</span>
-        <span>${t.percent}% ${etaText}</span>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; font-size:0.8rem; color:var(--text-muted); margin-bottom:0.25rem;">
+        <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;" title="Speed: ${escapeHtml(t.speed || '-')}">Speed: ${escapeHtml(t.speed || "-")}</span>
+        <span style="white-space:nowrap; flex-shrink:0;">${t.percent}% ${etaText}</span>
       </div>
       <div class="progress-track" style="height:6px;">
         <div class="progress-fill" style="width: ${t.percent}%;"></div>
